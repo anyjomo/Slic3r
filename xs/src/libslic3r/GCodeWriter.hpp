@@ -59,6 +59,7 @@ public:
     std::string travel_to_xy(const Pointf &point, const std::string &comment = std::string());
     std::string travel_to_xyz(const Pointf3 &point, const std::string &comment = std::string());
     std::string travel_to_z(double z, const std::string &comment = std::string());
+    std::string arc_move(const Pointf &point, double center_x, double center_y, bool clockwise, const std::string &comment = std::string());
     bool will_move_z(double z) const;
     std::string extrude_to_xy(const Pointf &point, double dE, const std::string &comment = std::string());
     std::string extrude_to_xyz(const Pointf3 &point, double dE, const std::string &comment = std::string());

@@ -7,10 +7,16 @@
 
 #define FLAVOR_IS(val) this->config.gcode_flavor == val
 #define FLAVOR_IS_NOT(val) this->config.gcode_flavor != val
-#define COMMENT(comment) if (this->config.gcode_comments && !comment.empty()) gcode << " ; " << comment;
+#define COMMENT(comment) if (this->config.gcode_comments && !comment.empty()) { \
+    if (FLAVOR_IS(gcfAerotech)) \
+        gcode << " // " << comment; \
+    else \
+        gcode << " ; " << comment; \
+}
 #define PRECISION(val, precision) std::fixed << std::setprecision(precision) << val
 #define XYZF_NUM(val) PRECISION(val, 3)
 #define E_NUM(val) PRECISION(val, 5)
+#define AEROTECH_NUM(val) PRECISION(val, 6)  // 6 decimal places for 5nm resolution
 
 namespace Slic3r {
 
@@ -18,7 +24,16 @@ void
 GCodeWriter::apply_print_config(const PrintConfig &print_config)
 {
     this->config.apply(print_config, true);
-    this->_extrusion_axis = this->config.get_extrusion_axis();
+    // Set extrusion axis based on flavor
+    if (this->config.gcode_flavor == gcfAerotech) {
+        this->_extrusion_axis = ""; // Aerotech doesn't use extrusion
+    } else if ((this->config.gcode_flavor == gcfMach3) || (this->config.gcode_flavor == gcfMachinekit)) {
+        this->_extrusion_axis = "A";
+    } else if (this->config.gcode_flavor == gcfNoExtrusion) {
+        this->_extrusion_axis = "";
+    } else {
+        this->_extrusion_axis = this->config.get_extrusion_axis();
+    }
 }
 
 std::string
@@ -66,11 +81,22 @@ GCodeWriter::preamble()
 {
     std::ostringstream gcode;
 
-    if (FLAVOR_IS_NOT(gcfMakerWare)) {
+    if (FLAVOR_IS(gcfAerotech)) {
+        gcode << "M65 // close Shutter\n"
+              << "G71 // Metric units (millimeters)\n"
+              << "G76 // Time in seconds\n"
+              << "G94 // Units per second mode\n"
+              << "G90 // Absolute positioning\n"
+              << "G109 // Disable velocity blending\n"
+              << "G69 // Path blending with S curve\n"
+              << "G16 X Y Z // Configure circular interpolation axes\n"
+              << "G17 // Select XY plane for circular interpolation\n";
+    } else if (FLAVOR_IS_NOT(gcfMakerWare)) {
         gcode << "G21 ; set units to millimeters\n";
         gcode << "G90 ; use absolute coordinates\n";
     }
-    if (FLAVOR_IS(gcfRepRap) || FLAVOR_IS(gcfTeacup) || FLAVOR_IS(gcfRepetier) || FLAVOR_IS(gcfSmoothie)) {
+
+    if (FLAVOR_IS(gcfRepRap) || FLAVOR_IS(gcfTeacup) || FLAVOR_IS(gcfRepetier) || FLAVOR_IS(gcfSmoothie) || FLAVOR_IS(gcfAerotech)) {
         if (this->config.use_relative_e_distances) {
             gcode << "M83 ; use relative distances for extrusion\n";
         } else {
@@ -79,7 +105,6 @@ GCodeWriter::preamble()
         gcode << this->reset_e(true);
     }
 
-
     return gcode.str();
 }
 
@@ -87,8 +112,14 @@ std::string
 GCodeWriter::postamble() const
 {
     std::ostringstream gcode;
-    if (FLAVOR_IS(gcfMachinekit))
-          gcode << "M2 ; end of program\n";
+    if (FLAVOR_IS(gcfMachinekit)) {
+        gcode << "M2 ; end of program\n";
+    } else if (FLAVOR_IS(gcfAerotech)) {
+        gcode << "M65 // Laser off\n"
+              << "G90 // Ensure absolute mode\n"
+              << "G1 Z15.000000 F1000.000000 // Safe Z height\n"
+              << "M2 // Program end\n";
+    }
     return gcode.str();
 }
 
@@ -107,7 +138,7 @@ GCodeWriter::set_temperature(unsigned int temperature, bool wait, int tool) cons
     
     std::ostringstream gcode;
     gcode << code << " ";
-    if (FLAVOR_IS(gcfMach3) || FLAVOR_IS(gcfMachinekit)) {
+    if (FLAVOR_IS(gcfMach3) || FLAVOR_IS(gcfMachinekit) || FLAVOR_IS(gcfAerotech)) {
         gcode << "P";
     } else {
         gcode << "S";
@@ -146,7 +177,7 @@ GCodeWriter::set_bed_temperature(unsigned int temperature, bool wait) const
     
     std::ostringstream gcode;
     gcode << code << " ";
-    if (FLAVOR_IS(gcfMach3) || FLAVOR_IS(gcfMachinekit)) {
+    if (FLAVOR_IS(gcfMach3) || FLAVOR_IS(gcfMachinekit) || FLAVOR_IS(gcfAerotech)) {
         gcode << "P";
     } else {
         gcode << "S";
@@ -182,7 +213,7 @@ GCodeWriter::set_fan(unsigned int speed, bool dont_save)
                 gcode << "M126";
             } else {
                 gcode << "M106 ";
-                if (FLAVOR_IS(gcfMach3) || FLAVOR_IS(gcfMachinekit)) {
+                if (FLAVOR_IS(gcfMach3) || FLAVOR_IS(gcfMachinekit) || FLAVOR_IS(gcfAerotech)) {
                     gcode << "P";
                 } else {
                     gcode << "S";
@@ -214,6 +245,8 @@ GCodeWriter::set_acceleration(unsigned int acceleration)
         gcode << "M202 X" << acceleration << " Y" << acceleration;
     } else if (FLAVOR_IS(gcfRepRap)) {
         gcode << "M204 P" << acceleration << " T" << acceleration;
+    } else if (FLAVOR_IS(gcfAerotech)) {
+        gcode << "M108 P" << acceleration;
     } else {
         gcode << "M204 S" << acceleration;
     }
@@ -228,7 +261,8 @@ GCodeWriter::reset_e(bool force)
 {
     if (FLAVOR_IS(gcfMach3)
         || FLAVOR_IS(gcfMakerWare)
-        || FLAVOR_IS(gcfSailfish))
+        || FLAVOR_IS(gcfSailfish)
+        || FLAVOR_IS(gcfAerotech))  // Aerotech doesn't need E reset
         return "";
     
     if (this->_extruder != NULL) {
@@ -295,6 +329,8 @@ GCodeWriter::toolchange(unsigned int extruder_id)
             gcode << "M135 T";
         } else if (FLAVOR_IS(gcfSailfish)) {
             gcode << "M108 T";
+        } else if (FLAVOR_IS(gcfAerotech)) {
+            gcode << "M6 T";  // Aerotech uses M6 for tool change
         } else {
             gcode << "T";
         }
@@ -311,7 +347,11 @@ GCodeWriter::set_speed(double F, const std::string &comment,
 {
     std::ostringstream gcode;
     gcode.precision(3);
-    gcode << "G1 F" << std::fixed << F;
+    if (FLAVOR_IS(gcfAerotech)) {
+        gcode << "F" << std::fixed << F;  // Aerotech uses standalone F command
+    } else {
+        gcode << "G1 F" << std::fixed << F;
+    }
     COMMENT(comment);
     gcode << cooling_marker;
     gcode << "\n";
@@ -325,9 +365,16 @@ GCodeWriter::travel_to_xy(const Pointf &point, const std::string &comment)
     this->_pos.y = point.y;
     
     std::ostringstream gcode;
-    gcode << "G1 X" << XYZF_NUM(point.x)
-          <<   " Y" << XYZF_NUM(point.y)
-          <<   " F" << XYZF_NUM(this->config.travel_speed.value * 60.0);
+    if (FLAVOR_IS(gcfAerotech)) {
+        // Aerotech uses higher precision and separate commands
+        gcode << "G1 X" << AEROTECH_NUM(point.x) << "\n"
+              << "G1 Y" << AEROTECH_NUM(point.y) << "\n"
+              << "F" << AEROTECH_NUM(this->config.travel_speed.value);
+    } else {
+        gcode << "G1 X" << XYZF_NUM(point.x)
+              << " Y" << XYZF_NUM(point.y)
+              << " F" << XYZF_NUM(this->config.travel_speed.value * 60.0);
+    }
     COMMENT(comment);
     gcode << "\n";
     return gcode.str();
@@ -352,10 +399,20 @@ GCodeWriter::travel_to_xyz(const Pointf3 &point, const std::string &comment)
     this->_pos = point;
     
     std::ostringstream gcode;
-    gcode << "G1 X" << XYZF_NUM(point.x)
-          <<   " Y" << XYZF_NUM(point.y)
-          <<   " Z" << XYZF_NUM(point.z)
-          <<   " F" << XYZF_NUM(this->config.travel_speed.value * 60.0);
+    if (FLAVOR_IS(gcfAerotech)) {
+        // Aerotech uses higher precision and separate commands
+        gcode << "M65 // Close shutter before movement\n"
+              << "G1 X" << AEROTECH_NUM(point.x) << "\n"
+              << "G1 Y" << AEROTECH_NUM(point.y) << "\n"
+              << "G1 Z" << AEROTECH_NUM(point.z) << "\n"
+              << "F" << AEROTECH_NUM(this->config.travel_speed.value) << "\n"
+              << "M64 // Open shutter after movement";
+    } else {
+        gcode << "G1 X" << XYZF_NUM(point.x)
+              << " Y" << XYZF_NUM(point.y)
+              << " Z" << XYZF_NUM(point.z)
+              << " F" << XYZF_NUM(this->config.travel_speed.value * 60.0);
+    }
     COMMENT(comment);
     gcode << "\n";
     return gcode.str();
@@ -385,8 +442,15 @@ GCodeWriter::_travel_to_z(double z, const std::string &comment)
     this->_pos.z = z;
     
     std::ostringstream gcode;
-    gcode << "G1 Z" << XYZF_NUM(z)
-          <<   " F" << XYZF_NUM(this->config.travel_speed.value * 60.0);
+    if (FLAVOR_IS(gcfAerotech)) {
+        gcode << "M65 // Close shutter before Z movement\n"
+              << "G1 Z" << AEROTECH_NUM(z) << "\n"
+              << "F" << AEROTECH_NUM(this->config.travel_speed.value) << "\n"
+              << "M64 // Open shutter after Z movement";
+    } else {
+        gcode << "G1 Z" << XYZF_NUM(z)
+              << " F" << XYZF_NUM(this->config.travel_speed.value * 60.0);
+    }
     COMMENT(comment);
     gcode << "\n";
     return gcode.str();
@@ -569,6 +633,34 @@ GCodeWriter::unlift()
         this->_lifted = 0;
     }
     return gcode;
+}
+
+std::string
+GCodeWriter::arc_move(const Pointf &point, double center_x, double center_y, bool clockwise, const std::string &comment)
+{
+    this->_pos.x = point.x;
+    this->_pos.y = point.y;
+    
+    std::ostringstream gcode;
+    if (FLAVOR_IS(gcfAerotech)) {
+        // Aerotech uses G2/G3 with higher precision and explicit I,J center coordinates
+        gcode << (clockwise ? "G2" : "G3")
+              << " X" << AEROTECH_NUM(point.x)
+              << " Y" << AEROTECH_NUM(point.y)
+              << " I" << AEROTECH_NUM(center_x)
+              << " J" << AEROTECH_NUM(center_y)
+              << "\nF" << AEROTECH_NUM(this->config.travel_speed.value);
+    } else {
+        gcode << (clockwise ? "G2" : "G3")
+              << " X" << XYZF_NUM(point.x)
+              << " Y" << XYZF_NUM(point.y)
+              << " I" << XYZF_NUM(center_x)
+              << " J" << XYZF_NUM(center_y)
+              << " F" << XYZF_NUM(this->config.travel_speed.value * 60.0);
+    }
+    COMMENT(comment);
+    gcode << "\n";
+    return gcode.str();
 }
 
 }

@@ -80,3 +80,10 @@ Contributions by Henrik Brix Andersen, Vojtech Bubnik, Nicolas Dandrimont, Mark 
 ### How can I invoke Slic3r using the command line?
 
 The command line is documented in the relevant [manual page](https://manual.slic3r.org/advanced/command-line).
+
+
+# Aerotech G code flavor
+
+The Aerotech G code Flavor is here implemented as an opnion for the command line interface.
+
+* `--aerotech` - use Aerotech G code flavor
